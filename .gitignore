@@ -1,0 +1,11 @@
+node_modules/
+dist/
+__pycache__/
+*.pyc
+.env
+*.log
+.DS_Store
+mosquitto/certs/*.crt
+mosquitto/certs/*.key
+mosquitto/certs/*.csr
+mosquitto/certs/*.srl

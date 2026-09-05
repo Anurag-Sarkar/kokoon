@@ -1,0 +1,69 @@
+services:
+  # The image's mosquitto process runs as uid 1000 (see /etc/passwd in the
+  # image), but a freshly created named volume is root-owned — so without
+  # this, persistence saves silently fail with "Permission denied" on every
+  # shutdown (retained messages never actually survive a restart). Runs once
+  # per `up`; chown is idempotent, so it's a no-op once ownership is correct.
+  mosquitto-init:
+    image: alpine:latest
+    volumes:
+      - mosquitto-data:/mosquitto/data
+    command: chown -R 1000:1000 /mosquitto/data
+
+  mosquitto:
+    image: iegomez/mosquitto-go-auth:latest
+    restart: unless-stopped
+    ports:
+      - "8883:8883" # MQTT over TLS — devices connect here
+      # 1883 is intentionally NOT published: plain MQTT is docker-network only,
+      # used by the ingestion process and ws workers with backend credentials.
+    volumes:
+      - ./mosquitto/mosquitto.conf:/etc/mosquitto/mosquitto.conf:ro
+      - ./mosquitto/certs:/mosquitto/certs:ro
+      - mosquitto-data:/mosquitto/data
+    depends_on:
+      mosquitto-init:
+        condition: service_completed_successfully
+      ws: # MQTT auth is delegated to the ws API (/mqtt/*)
+        condition: service_started
+
+  # Postgres runs externally (RDS) in this deployment — nothing to run here.
+  # ingestion/ws connect straight to DATABASE_URL in .env. If you want a local
+  # Postgres for dev instead, see git history for the old `postgres:` service.
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Ingestion and ws are ONE codebase / ONE image — different command only.
+  ingestion:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    command: ["node", "src/ingestion.js"]
+    env_file: .env
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  ws:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    command: ["node", "src/ws.js"]
+    env_file: .env
+    ports:
+      - "${WS_PORT:-8080}:3000"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  mosquitto-data:
